@@ -1,0 +1,80 @@
+name: Rollback/Revert
+
+on:
+  repository_dispatch:
+    types: [rollback]
+
+permissions:
+  contents: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log event payload
+        run: |
+          echo "Event Type: rollback"
+          echo "Target Commit: ${{ github.event.client_payload.commit }}"
+          echo "Branch: ${{ github.event.client_payload.branch || 'main' }}"
+          echo "Method: ${{ github.event.client_payload.method || 'reset' }}"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.branch || 'main' }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Safe Reset with Backup
+        if: ${{ github.event.client_payload.method == 'reset' || github.event.client_payload.method == '' }}
+        env:
+          TARGET_COMMIT: ${{ github.event.client_payload.commit }}
+          BRANCH: ${{ github.event.client_payload.branch || 'main' }}
+        run: |
+          echo "=== SAFE ROLLBACK START ==="
+          echo "Target: $TARGET_COMMIT"
+          echo "Branch: $BRANCH"
+
+          CURRENT_HEAD=$(git rev-parse HEAD)
+          BACKUP_NAME="backup-rollback-$(date +%Y%m%d-%H%M%S)"
+
+          echo "Step 1: Creating backup branch $BACKUP_NAME"
+          git checkout -b $BACKUP_NAME
+          git push origin $BACKUP_NAME
+          echo "Backup branch created: $BACKUP_NAME"
+
+          echo "Step 2: Switching back to $BRANCH"
+          git checkout $BRANCH
+
+          echo "Step 3: Resetting to $TARGET_COMMIT"
+          git reset --hard $TARGET_COMMIT
+
+          echo "Step 4: Restoring workflow files"
+          git checkout $GITHUB_SHA -- .github/workflows/
+          git commit --amend --no-edit
+
+          echo "Step 5: Force pushing $BRANCH"
+          git push origin $BRANCH --force
+
+          echo "=== ROLLBACK COMPLETE ==="
+          echo "main is now at: $(git rev-parse HEAD)"
+          echo "Backup saved at: $BACKUP_NAME"
+
+      - name: Revert target commit
+        if: ${{ github.event.client_payload.method == 'revert' }}
+        env:
+          TARGET_COMMIT: ${{ github.event.client_payload.commit }}
+        run: |
+          echo "Reverting commit: $TARGET_COMMIT"
+          git revert --no-edit $TARGET_COMMIT
+          git push origin ${{ github.event.client_payload.branch || 'main' }}
+          echo "Revert complete. New commit created to undo $TARGET_COMMIT"
+
+      - name: Rollback complete
+        run: |
+          echo "Rollback job finished successfully"
+          echo "Current HEAD: $(git rev-parse HEAD)"
